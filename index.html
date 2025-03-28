@@ -24,7 +24,7 @@
 
   <script>
     const ws = new WebSocket('wss://file-share-1tk6.onrender.com');
-    let peerId, pc, dataChannel;
+    let peerId, pc, dataChannel, remotePeerId, fileToSend;
 
     ws.onmessage = (event) => {
       const data = JSON.parse(event.data);
@@ -33,6 +33,7 @@
         peerId = data.id;
         document.getElementById('peerId').textContent = peerId;
       } else if (data.type === 'offer') {
+        remotePeerId = data.from;
         handleOffer(data);
       } else if (data.type === 'answer') {
         handleAnswer(data);
@@ -56,19 +57,20 @@
 
       pc.onicecandidate = (event) => {
         if (event.candidate) {
+          const targetId = remotePeerId || document.getElementById('remoteId').value;
           ws.send(JSON.stringify({
             type: 'candidate',
             candidate: event.candidate,
-            to: document.getElementById('remoteId').value
+            to: targetId
           }));
-          console.log('Sent ICE candidate:', event.candidate);
+          console.log('Sent ICE candidate to:', targetId);
         }
       };
 
       dataChannel.onopen = () => {
         console.log('DataChannel opened');
         document.getElementById('status').textContent = 'Peer connection established';
-        sendFileData(); // Send file only when channel is open
+        if (fileToSend) sendFileData(); // Only send if sender
       };
       dataChannel.onmessage = (event) => receiveFile(event.data);
       pc.onconnectionstatechange = () => {
@@ -79,56 +81,66 @@
       };
     }
 
-    let fileToSend; // Store file for sending later
     async function sendFile() {
-      const file = document.getElementById('fileInput').files[0];
+      const fileInput = document.getElementById('fileInput');
+      fileToSend = fileInput.files[0]; // Get file directly from input
       const remoteId = document.getElementById('remoteId').value;
 
-      if (!file) return alert('Please select a file!');
+      if (!fileToSend) return alert('Please select a file!');
       if (!remoteId) return alert('Please enter a recipient Peer ID!');
 
-      fileToSend = file; // Store file
+      remotePeerId = remoteId;
       document.getElementById('status').textContent = 'Initiating transfer...';
       createPeerConnection();
 
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
-      ws.send(JSON.stringify({ type: 'offer', offer, to: remoteId }));
-      console.log('Offer sent:', offer);
+      ws.send(JSON.stringify({ type: 'offer', offer, to: remoteId, from: peerId }));
+      console.log('Offer sent to:', remoteId);
     }
 
     function sendFileData() {
       const reader = new FileReader();
       reader.onload = () => {
-        dataChannel.send(reader.result);
-        document.getElementById('status').textContent = 'File sent!';
+        try {
+          dataChannel.send(reader.result);
+          document.getElementById('status').textContent = 'File sent!';
+        } catch (error) {
+          console.error('Failed to send file:', error);
+          document.getElementById('status').textContent = 'Failed to send file';
+        }
       };
-      reader.readAsArrayBuffer(fileToSend);
+      reader.onerror = () => {
+        console.error('FileReader error:', reader.error);
+        document.getElementById('status').textContent = 'Error reading file';
+      };
+      reader.readAsArrayBuffer(fileToSend); // Ensure fileToSend is valid
     }
 
     async function handleOffer(data) {
-      console.log('Received offer:', data);
+      console.log('Received offer from:', data.from);
       createPeerConnection();
       await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
-      ws.send(JSON.stringify({ type: 'answer', answer, to: data.from }));
-      console.log('Answer sent:', answer);
+      ws.send(JSON.stringify({ type: 'answer', answer, to: data.from, from: peerId }));
+      console.log('Answer sent to:', data.from);
     }
 
     async function handleAnswer(data) {
-      console.log('Received answer:', data);
+      console.log('Received answer from:', data.from);
       await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
     }
 
     async function handleCandidate(data) {
-      console.log('Received candidate:', data);
+      console.log('Received candidate from:', data.from);
       if (pc) {
         await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
       }
     }
 
     function receiveFile(data) {
+      console.log('File data received');
       const blob = new Blob([data]);
       const url = URL.createObjectURL(blob);
       const link = document.getElementById('downloadLink');
